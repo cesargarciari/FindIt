@@ -1,0 +1,8 @@
+eval/corpus/
+eval/golden.jsonl
+eval/*.sqlite
+.DS_Store
+build/
+DerivedData/
+xcuserdata/
+*.dmg
