@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(./eval/corpus/**)",
+      "Read(./eval/golden.csv)",
+      "Read(./eval/golden.jsonl)"
+    ]
+  }
+}
