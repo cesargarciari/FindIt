@@ -14,6 +14,7 @@ func normalize(_ v: [Float]) -> [Float] {
 }
 
 func dot(_ a: [Float], _ b: [Float]) -> Float{
+    precondition(a.count == b.count)
     let result = zip(a, b).reduce(Float(0)) { sum, pair in
         sum + (pair.0 * pair.1)
     }

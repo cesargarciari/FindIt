@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import Testing
 @testable import FindItCore
 
@@ -97,6 +98,26 @@ struct OllamaClientTests {
         #expect(try json(request.body)["options"] == nil)
     }
 
+    @Test func describeTurnsThinkingOffByDefault() async throws {
+        let (session, baseURL) = MockURLProtocol.stub(body: #"{"message":{"role":"assistant","content":"{}"}}"#)
+        let client = OllamaClient(baseURL: baseURL, session: session)
+
+        _ = try await client.describe(imageJPEG: Data([1]), prompt: "p", schemaJSON: "{}", model: "m")
+
+        let request = try #require(MockURLProtocol.captured(for: baseURL).first)
+        #expect(try json(request.body)["think"] as? Bool == false)
+    }
+
+    @Test func describeOmitsThinkWhenNil() async throws {
+        let (session, baseURL) = MockURLProtocol.stub(body: #"{"message":{"role":"assistant","content":"{}"}}"#)
+        let client = OllamaClient(baseURL: baseURL, session: session)
+
+        _ = try await client.describe(imageJPEG: Data([1]), prompt: "p", schemaJSON: "{}", model: "m", think: nil)
+
+        let request = try #require(MockURLProtocol.captured(for: baseURL).first)
+        #expect(try json(request.body)["think"] == nil)
+    }
+
     @Test func describeRejectsInvalidSchemaWithoutCallingServer() async throws {
         let (session, baseURL) = MockURLProtocol.stub()
         let client = OllamaClient(baseURL: baseURL, session: session)
@@ -145,6 +166,17 @@ struct OllamaClientTests {
         }
     }
 
+    @Test func timeoutIsSeparateFromUnreachable() async {
+        let (session, baseURL) = MockURLProtocol.stub(error: .timedOut)
+        let client = OllamaClient(baseURL: baseURL, session: session)
+
+        await #expect {
+            _ = try await client.installedModels()
+        } throws: { error in
+            if case OllamaError.timedOut = error { true } else { false }
+        }
+    }
+
     @Test func cancellationIsNotReportedAsUnreachable() async {
         let (session, baseURL) = MockURLProtocol.stub(error: .cancelled)
         let client = OllamaClient(baseURL: baseURL, session: session)
@@ -166,6 +198,48 @@ struct OllamaClientTests {
             } else {
                 false
             }
+        }
+    }
+
+    @Test func errorStatusKeepsOnlyOllamaErrorField() async {
+        let (session, baseURL) = MockURLProtocol.stub(status: 500, body: #"{"error":"out of memory","detail":"ignored"}"#)
+        let client = OllamaClient(baseURL: baseURL, session: session)
+
+        await #expect {
+            _ = try await client.installedModels()
+        } throws: { error in
+            if case OllamaError.badStatus(500, let body) = error { body == "out of memory" } else { false }
+        }
+    }
+
+    @Test(arguments: [
+        #"{"error":"\#(String(repeating: "x", count: 2000))"}"#,
+        "<html>\(String(repeating: "proxy error ", count: 1000))</html>",
+    ])
+    func errorStatusBodyIsCappedAt512Characters(responseBody: String) async {
+        let (session, baseURL) = MockURLProtocol.stub(status: 502, body: responseBody)
+        let client = OllamaClient(baseURL: baseURL, session: session)
+
+        await #expect {
+            _ = try await client.installedModels()
+        } throws: { error in
+            if case OllamaError.badStatus(_, let body) = error { body.count == 512 } else { false }
+        }
+    }
+
+    // MainActor keeps the task from starting until `pending` holds it, so onStart can always cancel it.
+    @MainActor @Test func cancellationWhileRequestIsInFlightThrowsCancellationError() async {
+        let pending = Mutex<Task<[String], any Error>?>(nil)
+        let (session, baseURL) = MockURLProtocol.stub(body: #"{"models":[]}"#) {
+            pending.withLock { $0?.cancel() }
+        }
+        let client = OllamaClient(baseURL: baseURL, session: session)
+
+        let task = Task { @MainActor in try await client.installedModels() }
+        pending.withLock { $0 = task }
+
+        await #expect(throws: CancellationError.self) {
+            _ = try await task.value
         }
     }
 

@@ -15,7 +15,11 @@ public struct Screenshot: Codable, Sendable, Equatable, FetchableRecord, Mutable
     public static let databaseTableName = "screenshots"
 
     public var id: Int64?
-    public var path: String
+    /// Always Unicode NFC, matching scripts/build_golden.py. macOS can hand back NFD filenames,
+    /// and SQLite compares text byte by byte, so an unnormalized "é" would never match.
+    public var path: String {
+        didSet { path = Self.normalizedPath(path) }
+    }
     public var fileHash: String
     public var createdAt: Date
     public var status: Status
@@ -65,7 +69,7 @@ public struct Screenshot: Codable, Sendable, Equatable, FetchableRecord, Mutable
         indexedAt: Date? = nil
     ) {
         self.id = id
-        self.path = path
+        self.path = Self.normalizedPath(path)
         self.fileHash = fileHash
         self.createdAt = createdAt
         self.status = status
@@ -80,7 +84,49 @@ public struct Screenshot: Codable, Sendable, Equatable, FetchableRecord, Mutable
         self.indexedAt = indexedAt
     }
 
+    // Written out so rows read from the database are normalized too: a decoded value skips
+    // didSet, and saving it back would otherwise keep an NFD path from raw SQL or older rows.
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            id: try container.decodeIfPresent(Int64.self, forKey: .id),
+            path: try container.decode(String.self, forKey: .path),
+            fileHash: try container.decode(String.self, forKey: .fileHash),
+            createdAt: try container.decode(Date.self, forKey: .createdAt),
+            status: try container.decode(Status.self, forKey: .status),
+            failReason: try container.decodeIfPresent(String.self, forKey: .failReason),
+            ocrText: try container.decodeIfPresent(String.self, forKey: .ocrText),
+            description: try container.decodeIfPresent(String.self, forKey: .description),
+            category: try container.decodeIfPresent(String.self, forKey: .category),
+            language: try container.decodeIfPresent(String.self, forKey: .language),
+            labels: try container.decodeIfPresent([String].self, forKey: .labels),
+            entities: try container.decodeIfPresent(String.self, forKey: .entities),
+            describerModel: try container.decodeIfPresent(String.self, forKey: .describerModel),
+            indexedAt: try container.decodeIfPresent(Date.self, forKey: .indexedAt)
+        )
+    }
+
     public mutating func didInsert(_ inserted: InsertionSuccess) {
         id = inserted.rowID
+    }
+
+    /// Use this on any path before comparing it with stored paths in SQL.
+    public static func normalizedPath(_ path: String) -> String {
+        path.precomposedStringWithCanonicalMapping
+    }
+}
+
+extension Screenshot {
+    static let maxFailReasonLength = 1000
+
+    /// Marks the screenshot failed and saves it. The reason is capped so a huge error body can't bloat the database.
+    /// Only status and fail_reason are written, so columns another step saved meanwhile are kept.
+    /// If the save throws, this value is left unchanged.
+    public mutating func markFailed(reason: String, in db: Database) throws {
+        var failed = self
+        failed.status = .failed
+        failed.failReason = String(reason.prefix(Self.maxFailReasonLength))
+        try failed.update(db, columns: [CodingKeys.status.rawValue, CodingKeys.failReason.rawValue])
+        self = failed
     }
 }

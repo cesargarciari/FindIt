@@ -1,8 +1,11 @@
 import Foundation
 
 public enum OllamaError: Error, Sendable {
-    /// The server could not be reached, or the request timed out.
+    /// The server could not be reached.
     case unreachable(URLError)
+    /// The server didn't answer in time, often because it is still loading the model. Worth retrying.
+    case timedOut
+    /// `body` is Ollama's `error` message when the reply has one, otherwise the raw body, capped at 512 characters.
     case badStatus(code: Int, body: String)
     case decodingFailed(String)
     /// The schema passed to `describe` is not valid JSON.
@@ -17,6 +20,8 @@ public struct OllamaClient: Sendable {
     // The first describe call loads the vision model into memory, which can take minutes.
     static let describeTimeout: TimeInterval = 180
     static let defaultTimeout: TimeInterval = 60
+    // A proxy or HTML error page can be any size, and the body may end up in fail_reason.
+    static let maxErrorBodyLength = 512
 
     public init(
         baseURL: URL = URL(string: "http://localhost:11434")!,
@@ -39,12 +44,16 @@ public struct OllamaClient: Sendable {
     }
 
     /// Sends one image with a prompt and returns the model's raw `message.content`.
+    ///
+    /// `think` defaults to false because qwen3-vl thinks by default, which slows every call.
+    /// Pass nil to leave the field out, for models that reject it.
     public func describe(
         imageJPEG: Data,
         prompt: String,
         schemaJSON: String,
         model: String,
-        temperature: Double? = nil
+        temperature: Double? = nil,
+        think: Bool? = false
     ) async throws -> String {
         // The schema is arbitrary JSON, so the body is built with JSONSerialization instead of Codable.
         guard let schema = try? JSONSerialization.jsonObject(with: Data(schemaJSON.utf8)) else {
@@ -64,6 +73,9 @@ public struct OllamaClient: Sendable {
         ]
         if let temperature {
             request["options"] = ["temperature": temperature]
+        }
+        if let think {
+            request["think"] = think
         }
         let body = try JSONSerialization.data(withJSONObject: request)
         let data = try await send(path: "api/chat", method: "POST", body: body, timeout: Self.describeTimeout)
@@ -94,14 +106,23 @@ public struct OllamaClient: Sendable {
         } catch let error as URLError {
             // A cancelled task (app quit, indexing stopped) must not mark a screenshot as failed.
             if error.code == .cancelled { throw CancellationError() }
+            if error.code == .timedOut { throw OllamaError.timedOut }
             throw OllamaError.unreachable(error)
         }
+        // A cancel that lands after the response arrived would otherwise still be processed.
+        try Task.checkCancellation()
 
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         guard (200..<300).contains(status) else {
-            throw OllamaError.badStatus(code: status, body: String(decoding: data, as: UTF8.self))
+            throw OllamaError.badStatus(code: status, body: Self.errorMessage(from: data))
         }
         return data
+    }
+
+    private static func errorMessage(from data: Data) -> String {
+        let message = (try? JSONDecoder().decode(ErrorResponse.self, from: data))?.error
+            ?? String(decoding: data, as: UTF8.self)
+        return String(message.prefix(maxErrorBodyLength))
     }
 
     private func decode<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
@@ -127,6 +148,10 @@ private struct ChatResponse: Decodable {
         let content: String
     }
     let message: Message
+}
+
+private struct ErrorResponse: Decodable {
+    let error: String
 }
 
 private struct TagsResponse: Decodable {

@@ -55,6 +55,16 @@ struct ImageResizerTests {
         #expect(size.height == 300)
     }
 
+    // A non-positive size used to silently fall back to full resolution.
+    @Test func nonPositiveMaxDimensionTraps() async {
+        await #expect(processExitsWith: .failure) {
+            _ = try? ImageResizer().jpegData(forImageAt: URL(fileURLWithPath: "/nonexistent.png"), maxDimension: 0)
+        }
+        await #expect(processExitsWith: .failure) {
+            _ = try? ImageResizer().jpegData(forImageAt: URL(fileURLWithPath: "/nonexistent.png"), maxDimension: -5)
+        }
+    }
+
     @Test func unreadableFileThrows() throws {
         try withTemporaryDirectory { folder in
             let url = folder.appending(path: "not-an-image.png")

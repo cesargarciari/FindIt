@@ -1,4 +1,5 @@
-public func recallAtK(_ results: [String], relevant: Set<String>, k: Int) -> Double {
+public func hitAtK(_ results: [String], relevant: Set<String>, k: Int) -> Double {
+    precondition(k > 0)
     let topResults = results.prefix(k)
 
     let foundRelevant = topResults.contains { item in
@@ -19,4 +20,10 @@ public func reciprocalRank(_ results: [String], relevant: Set<String>) -> Double
         return 0.0
     }
 
+}
+
+public func recallAtK(_ results: [String], relevant: Set<String>, k: Int) -> Double {
+    precondition(k > 0)
+    precondition(!relevant.isEmpty)
+    return Double(Set(results.prefix(k)).intersection(relevant).count) / Double(relevant.count)
 }

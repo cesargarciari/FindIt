@@ -15,15 +15,22 @@ final class MockURLProtocol: URLProtocol, @unchecked Sendable {
         var status: Int
         var body: Data
         var error: URLError.Code?
+        var onStart: (@Sendable () -> Void)?
         var captured: [Captured] = []
     }
 
     private static let stubs = Mutex<[String: Stub]>([:])
 
     /// Returns a URLSession and base URL whose requests get `status` and `body` back.
-    static func stub(status: Int = 200, body: String = "", error: URLError.Code? = nil) -> (URLSession, URL) {
+    /// `onStart` runs when a request arrives, before the response is sent.
+    static func stub(
+        status: Int = 200,
+        body: String = "",
+        error: URLError.Code? = nil,
+        onStart: (@Sendable () -> Void)? = nil
+    ) -> (URLSession, URL) {
         let host = "\(UUID().uuidString.lowercased()).mock"
-        stubs.withLock { $0[host] = Stub(status: status, body: Data(body.utf8), error: error) }
+        stubs.withLock { $0[host] = Stub(status: status, body: Data(body.utf8), error: error, onStart: onStart) }
 
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [MockURLProtocol.self]
@@ -54,6 +61,7 @@ final class MockURLProtocol: URLProtocol, @unchecked Sendable {
             client?.urlProtocol(self, didFailWithError: URLError(.unsupportedURL))
             return
         }
+        stub.onStart?()
         if let code = stub.error {
             client?.urlProtocol(self, didFailWithError: URLError(code))
             return

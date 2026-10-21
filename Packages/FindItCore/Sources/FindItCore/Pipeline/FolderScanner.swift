@@ -15,7 +15,9 @@ public struct FolderScanner: Sendable {
         )
         return contents
             .filter { Self.imageExtensions.contains($0.pathExtension.lowercased()) }
-            // A folder named "x.png" is not an image.
+            // isRegularFile is false for folders (a folder named "x.png" is not an image) and for
+            // symlinks, which are deliberately skipped so a link can't pull in files from outside
+            // the folder. Subfolders are never entered either; contentsOfDirectory lists one level.
             .filter { (try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true }
             // Plain string order, so results don't depend on the user's locale.
             .sorted { $0.lastPathComponent < $1.lastPathComponent }

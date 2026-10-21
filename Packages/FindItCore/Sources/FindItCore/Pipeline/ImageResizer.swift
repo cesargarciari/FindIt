@@ -14,6 +14,10 @@ public struct ImageResizer: Sendable {
     /// Scales the image so its longest side is at most `maxDimension`, or keeps full size when nil.
     /// Never scales up.
     public func jpegData(forImageAt url: URL, maxDimension: Int? = 1024, quality: Double = 0.8) throws -> Data {
+        // ImageIO treats 0 or less as "no limit", which would silently send full-size images.
+        if let maxDimension {
+            precondition(maxDimension > 0, "maxDimension must be positive; pass nil for full size")
+        }
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
               let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
               let width = properties[kCGImagePropertyPixelWidth] as? Int,

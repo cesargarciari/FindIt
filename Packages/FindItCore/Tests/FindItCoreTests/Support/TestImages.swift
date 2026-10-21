@@ -23,11 +23,22 @@ enum TestImages {
         return context.makeImage()!
     }
 
-    /// Black text drawn large on a white background.
-    static func text(_ string: String, width: Int = 1200, height: Int = 300) -> CGImage {
-        make(width: width, height: height) { context in
-            // A serif font, because in Helvetica a capital I and a lowercase l look the same.
-            let font = CTFontCreateWithName("Times New Roman" as CFString, 96, nil)
+    struct FontNotLoaded: Error {
+        let requested: String
+        let got: String
+    }
+
+    /// Black text drawn large on a white background, in Menlo.
+    /// Throws if Menlo didn't load, because a substitute font can bring back look-alike glyphs.
+    static func text(_ string: String, width: Int = 1200, height: Int = 300) throws -> CGImage {
+        // Menlo ships with every macOS and draws a capital I and a lowercase l differently, unlike Helvetica.
+        let fontName = "Menlo-Regular"
+        let font = CTFontCreateWithName(fontName as CFString, 96, nil)
+        let loadedName = CTFontCopyPostScriptName(font) as String
+        guard loadedName == fontName else {
+            throw FontNotLoaded(requested: fontName, got: loadedName)
+        }
+        return make(width: width, height: height) { context in
             let attributed = NSAttributedString(string: string, attributes: [
                 NSAttributedString.Key(kCTFontAttributeName as String): font,
                 NSAttributedString.Key(kCTForegroundColorAttributeName as String): CGColor(gray: 0, alpha: 1),
