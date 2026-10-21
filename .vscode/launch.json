@@ -1,0 +1,24 @@
+{
+    "configurations": [
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:FindIt}/Packages/FindItCore",
+            "name": "Debug findit-eval (Packages/FindItCore)",
+            "target": "findit-eval",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug findit-eval (Packages/FindItCore)"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:FindIt}/Packages/FindItCore",
+            "name": "Release findit-eval (Packages/FindItCore)",
+            "target": "findit-eval",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release findit-eval (Packages/FindItCore)"
+        }
+    ]
+}
