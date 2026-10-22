@@ -89,6 +89,11 @@ public struct OllamaClient: Sendable {
         (try? await installedModels()) != nil
     }
 
+    /// Whether `model` is in an `installedModels()` list. Ollama lists "bge-m3" as "bge-m3:latest".
+    public static func isInstalled(_ model: String, in installed: [String]) -> Bool {
+        installed.contains(model) || installed.contains(model + ":latest")
+    }
+
     public func installedModels() async throws -> [String] {
         let data = try await send(path: "api/tags", method: "GET", body: nil, timeout: Self.defaultTimeout)
         return try decode(TagsResponse.self, from: data).models.map(\.name)

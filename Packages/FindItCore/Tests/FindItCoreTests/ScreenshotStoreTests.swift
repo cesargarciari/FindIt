@@ -302,6 +302,52 @@ struct ScreenshotStoreTests {
         #expect(try await store.nextUnfinished()?.status == .pending)
     }
 
+    @Test func allEmbeddingsReturnsIndexedVectorsForThatModelOnly() async throws {
+        let indexed = try #require(try await store.insertPending(path: "/a.png", fileHash: "a"))
+        let otherModel = try #require(try await store.insertPending(path: "/b.png", fileHash: "b"))
+        let failedLater = try #require(try await store.insertPending(path: "/c.png", fileHash: "c"))
+        try await store.saveIndexed(id: indexed, labels: [], searchableText: "a", vector: [0.6, 0.8], model: "bge-m3")
+        try await store.saveIndexed(id: otherModel, labels: [], searchableText: "b", vector: [1, 0], model: "nomic-embed-text")
+        try await store.saveIndexed(id: failedLater, labels: [], searchableText: "c", vector: [0, 1], model: "bge-m3")
+        // A vector whose screenshot isn't indexed any more must not show up in search.
+        try await store.markFailed(id: failedLater, reason: "boom")
+
+        let vectors = try await store.allEmbeddings(model: "bge-m3")
+
+        #expect(vectors == [indexed: [0.6, 0.8]])
+    }
+
+    @Test func allEmbeddingsIsEmptyWithoutVectors() async throws {
+        _ = try await store.insertPending(path: "/a.png", fileHash: "a")
+
+        #expect(try await store.allEmbeddings(model: "bge-m3").isEmpty)
+    }
+
+    @Test func pathsReturnsStoredPathsAndLeavesOutUnknownIds() async throws {
+        let a = try #require(try await store.insertPending(path: "/shots/cafe\u{301}.png", fileHash: "a"))
+        let b = try #require(try await store.insertPending(path: "/shots/b.png", fileHash: "b"))
+
+        let paths = try await store.paths(for: [b, 999, a])
+
+        // Paths come back as stored, which is NFC.
+        #expect(paths == [a: "/shots/caf\u{E9}.png", b: "/shots/b.png"])
+        #expect(paths[a].map { Array($0.utf8) } == Array("/shots/caf\u{E9}.png".utf8))
+    }
+
+    @Test func pathsForNoIdsIsEmpty() async throws {
+        #expect(try await store.paths(for: []).isEmpty)
+    }
+
+    @Test func failureReasonsCountsFailedScreenshotsByReason() async throws {
+        for (hash, reason) in [("a", "timedOut"), ("b", "timedOut"), ("c", "emptyEmbedding")] {
+            let id = try #require(try await store.insertPending(path: "/\(hash).png", fileHash: hash))
+            try await store.markFailed(id: id, reason: reason)
+        }
+        _ = try await store.insertPending(path: "/pending.png", fileHash: "p")
+
+        #expect(try await store.failureReasons() == ["timedOut": 2, "emptyEmbedding": 1])
+    }
+
     @Test func progressCountsGroupsUnfinishedAsPending() async throws {
         let statuses = ["pending", "ocr_done", "described", "indexed", "indexed", "failed"]
         try await queue.write { db in

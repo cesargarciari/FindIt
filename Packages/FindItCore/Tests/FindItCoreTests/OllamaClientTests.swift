@@ -143,6 +143,16 @@ struct OllamaClientTests {
         #expect(request.timeout == 60)
     }
 
+    @Test func isInstalledAcceptsTheLatestTag() {
+        let installed = ["qwen3-vl:8b", "bge-m3:latest"]
+
+        #expect(OllamaClient.isInstalled("qwen3-vl:8b", in: installed))
+        #expect(OllamaClient.isInstalled("bge-m3", in: installed))
+        #expect(OllamaClient.isInstalled("bge-m3:latest", in: installed))
+        #expect(!OllamaClient.isInstalled("qwen3-vl", in: installed))
+        #expect(!OllamaClient.isInstalled("nomic-embed-text", in: installed))
+    }
+
     @Test func isAvailableReflectsTagsResponse() async {
         let (upSession, upURL) = MockURLProtocol.stub(body: #"{"models":[]}"#)
         let (downSession, downURL) = MockURLProtocol.stub(error: .cannotConnectToHost)

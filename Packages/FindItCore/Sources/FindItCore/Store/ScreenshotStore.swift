@@ -139,6 +139,53 @@ public struct ScreenshotStore: Sendable {
         }
     }
 
+    /// Every stored vector for `model`, keyed by screenshot id, for vector search to hold in memory.
+    /// Only indexed screenshots, so one that failed or was reset after indexing can't come back in results.
+    public func allEmbeddings(model: String) async throws -> [Int64: [Float]] {
+        try await writer.read { db in
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT e.screenshot_id, e.vector
+                FROM embeddings e
+                JOIN screenshots s ON s.id = e.screenshot_id
+                WHERE e.model = ? AND s.status = ?
+                """, arguments: [model, Status.indexed])
+            var vectors: [Int64: [Float]] = [:]
+            for row in rows {
+                vectors[row["screenshot_id"]] = Self.decodeVector(row["vector"])
+            }
+            return vectors
+        }
+    }
+
+    /// The stored path for each id, so search results can be shown. Unknown ids are left out.
+    public func paths(for ids: [Int64]) async throws -> [Int64: String] {
+        if ids.isEmpty { return [:] }
+        return try await writer.read { db in
+            let rows = try Row.fetchAll(db, Screenshot.select(Column("id"), Column("path")).filter(keys: ids))
+            var paths: [Int64: String] = [:]
+            for row in rows {
+                paths[row["id"]] = row["path"]
+            }
+            return paths
+        }
+    }
+
+    /// How many failed screenshots share each fail_reason, for a run's summary.
+    public func failureReasons() async throws -> [String: Int] {
+        try await writer.read { db in
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT fail_reason, COUNT(*) AS count FROM screenshots
+                WHERE status = ? GROUP BY fail_reason
+                """, arguments: [Status.failed])
+            var reasons: [String: Int] = [:]
+            for row in rows {
+                // A failed row should always have a reason, but one written by hand might not.
+                reasons[row["fail_reason"] ?? "(no reason)", default: 0] += row["count"]
+            }
+            return reasons
+        }
+    }
+
     public func progressCounts() async throws -> ProgressCounts {
         try await writer.read { db in
             let indexed = try Screenshot.filter(Column("status") == Status.indexed).fetchCount(db)
