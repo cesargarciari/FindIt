@@ -123,26 +123,4 @@ public struct Screenshot: Codable, Sendable, Equatable, FetchableRecord, Mutable
 
 extension Screenshot {
     static let maxFailReasonLength = 1000
-
-    /// Marks the screenshot failed and saves it. The reason is capped so a huge error body can't bloat the database.
-    /// Only status, fail_reason and fail_count are written, so columns another step saved meanwhile are kept.
-    /// If the save throws, this value is left unchanged.
-    public mutating func markFailed(reason: String, in db: Database) throws {
-        let cappedReason = String(reason.prefix(Self.maxFailReasonLength))
-        let row = Self.filter(key: id)
-        // Counted in SQL, because this copy's failCount may be stale if another copy already failed it.
-        let changed = try row.updateAll(db, [
-            Column(CodingKeys.status.rawValue).set(to: Status.failed),
-            Column(CodingKeys.failReason.rawValue).set(to: cappedReason),
-            Column(CodingKeys.failCount.rawValue) += 1,
-        ])
-        guard changed > 0,
-              let newCount = try row.select(Column(CodingKeys.failCount.rawValue), as: Int.self).fetchOne(db)
-        else {
-            throw RecordError.recordNotFound(databaseTableName: Self.databaseTableName, key: ["id": id.databaseValue])
-        }
-        status = .failed
-        failReason = cappedReason
-        failCount = newCount
-    }
 }

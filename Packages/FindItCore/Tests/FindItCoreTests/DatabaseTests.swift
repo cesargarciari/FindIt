@@ -58,47 +58,18 @@ struct DatabaseTests {
         #expect(loaded.map { Array($0.path.utf8) } == Array("/tmp/caf\u{E9}.png".utf8))
     }
 
-    @Test func markFailedOnlyWritesStatusAndReason() throws {
+    @Test func upgradingFromV1GivesExistingRowsZeroFailures() throws {
         let queue = try DatabaseQueue()
-        try AppDatabase.migrator.migrate(queue)
-        var screenshot = Screenshot(path: "/tmp/shot.png", fileHash: "a", createdAt: Date(timeIntervalSince1970: 0))
-
-        let loaded = try queue.write { db in
-            try screenshot.insert(db)
-            // Another writer saves OCR text after this copy was read.
-            try db.execute(sql: "UPDATE screenshots SET ocr_text = 'hola' WHERE id = ?", arguments: [screenshot.id])
-            try screenshot.markFailed(reason: "boom", in: db)
-            return try Screenshot.fetchOne(db, key: screenshot.id)
-        }
-        #expect(loaded?.ocrText == "hola")
-        #expect(loaded?.status == .failed)
-    }
-
-    @Test func markFailedLeavesValueUnchangedWhenSaveFails() throws {
-        let queue = try DatabaseQueue()
-        try AppDatabase.migrator.migrate(queue)
-        var neverInserted = Screenshot(path: "/tmp/shot.png", fileHash: "a", createdAt: Date(timeIntervalSince1970: 0))
-
+        try AppDatabase.migrator.migrate(queue, upTo: "v1")
         try queue.write { db in
-            #expect(throws: (any Error).self) { try neverInserted.markFailed(reason: "boom", in: db) }
+            try db.execute(sql: "INSERT INTO screenshots (path, file_hash, created_at, status) VALUES ('/a.png', 'a', 0, 'failed')")
         }
-        #expect(neverInserted.status == .pending)
-        #expect(neverInserted.failReason == nil)
-    }
 
-    @Test func markFailedSavesStatusAndCapsReason() throws {
-        let queue = try DatabaseQueue()
         try AppDatabase.migrator.migrate(queue)
-        var screenshot = Screenshot(path: "/tmp/shot.png", fileHash: "a", createdAt: Date(timeIntervalSince1970: 0))
 
-        let loaded = try queue.write { db in
-            try screenshot.insert(db)
-            try screenshot.markFailed(reason: String(repeating: "é", count: 5000), in: db)
-            return try Screenshot.fetchOne(db, key: screenshot.id)
-        }
+        let loaded = try queue.read { db in try Screenshot.fetchOne(db) }
+        #expect(loaded?.failCount == 0)
         #expect(loaded?.status == .failed)
-        #expect(loaded?.failReason?.count == 1000)
-        #expect(loaded == screenshot)
     }
 
     @Test func ftsTableUsesDiacriticRemovingTokenizer() throws {

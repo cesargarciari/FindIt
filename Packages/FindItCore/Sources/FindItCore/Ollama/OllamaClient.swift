@@ -108,7 +108,8 @@ public struct OllamaClient: Sendable {
             (data, response) = try await session.data(for: request)
         } catch let error as URLError {
             // A cancelled task (app quit, indexing stopped) must not mark a screenshot as failed.
-            if error.code == .cancelled { throw CancellationError() }
+            // .cancelled alone isn't enough: an invalidated session reports it too, and that is a real failure.
+            if error.code == .cancelled && Task.isCancelled { throw CancellationError() }
             if error.code == .timedOut { throw OllamaError.timedOut }
             throw OllamaError.unreachable(error)
         }

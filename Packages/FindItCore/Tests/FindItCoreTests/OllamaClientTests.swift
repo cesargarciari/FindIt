@@ -177,12 +177,32 @@ struct OllamaClientTests {
         }
     }
 
-    @Test func cancellationIsNotReportedAsUnreachable() async {
+    // URLSession also reports .cancelled when the session itself is invalidated. With the task
+    // still running, that's an ordinary failure, so the screenshot gets marked failed.
+    @Test func cancelledRequestWithoutTaskCancelIsUnreachable() async {
         let (session, baseURL) = MockURLProtocol.stub(error: .cancelled)
         let client = OllamaClient(baseURL: baseURL, session: session)
 
-        await #expect(throws: CancellationError.self) {
+        await #expect {
             _ = try await client.installedModels()
+        } throws: { error in
+            if case OllamaError.unreachable(let urlError) = error { urlError.code == .cancelled } else { false }
+        }
+    }
+
+    // MainActor keeps the task from starting until `pending` holds it, so onStart can always cancel it.
+    @MainActor @Test func cancelledRequestFromCancelledTaskIsCancellationError() async {
+        let pending = Mutex<Task<[String], any Error>?>(nil)
+        let (session, baseURL) = MockURLProtocol.stub(error: .cancelled) {
+            pending.withLock { $0?.cancel() }
+        }
+        let client = OllamaClient(baseURL: baseURL, session: session)
+
+        let task = Task { @MainActor in try await client.installedModels() }
+        pending.withLock { $0 = task }
+
+        await #expect(throws: CancellationError.self) {
+            _ = try await task.value
         }
     }
 

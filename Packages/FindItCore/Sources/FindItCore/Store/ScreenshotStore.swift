@@ -95,6 +95,20 @@ public struct ScreenshotStore: Sendable {
         }
     }
 
+    /// The reason is capped so a huge error body can't bloat the database. Only status,
+    /// fail_reason and fail_count are written, so results an earlier step saved are kept.
+    public func markFailed(id: Int64, reason: String) async throws {
+        let cappedReason = String(reason.prefix(Screenshot.maxFailReasonLength))
+        try await writer.write { db in
+            try Self.update(id, in: db, [
+                Column("status").set(to: Status.failed),
+                Column("fail_reason").set(to: cappedReason),
+                // Counted in SQL, so it stays right however many times the screenshot failed before.
+                Column("fail_count") += 1,
+            ])
+        }
+    }
+
     /// After this many failures a screenshot stays failed, so a corrupt file isn't retried forever.
     public static let maxFailures = 3
 
