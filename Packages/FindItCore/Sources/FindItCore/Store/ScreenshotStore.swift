@@ -170,6 +170,34 @@ public struct ScreenshotStore: Sendable {
         }
     }
 
+    /// The stored file hash for each id, so eval can match results by content. Unknown ids are left out.
+    public func fileHashes(for ids: [Int64]) async throws -> [Int64: String] {
+        if ids.isEmpty { return [:] }
+        return try await writer.read { db in
+            let rows = try Row.fetchAll(db, Screenshot.select(Column("id"), Column("file_hash")).filter(keys: ids))
+            var hashes: [Int64: String] = [:]
+            for row in rows {
+                hashes[row["id"]] = row["file_hash"]
+            }
+            return hashes
+        }
+    }
+
+    /// The status of the screenshot with each file hash. Hashes that were never enqueued are left out.
+    public func statuses(forHashes hashes: [String]) async throws -> [String: Status] {
+        if hashes.isEmpty { return [:] }
+        return try await writer.read { db in
+            let rows = try Row.fetchAll(db, Screenshot
+                .select(Column("file_hash"), Column("status"))
+                .filter(hashes.contains(Column("file_hash"))))
+            var statuses: [String: Status] = [:]
+            for row in rows {
+                statuses[row["file_hash"]] = row["status"]
+            }
+            return statuses
+        }
+    }
+
     /// How many failed screenshots share each fail_reason, for a run's summary.
     public func failureReasons() async throws -> [String: Int] {
         try await writer.read { db in

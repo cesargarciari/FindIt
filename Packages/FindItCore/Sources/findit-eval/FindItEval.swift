@@ -6,7 +6,7 @@ import Foundation
 struct FindItEval: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "findit-eval",
-        subcommands: [Index.self, Derive.self, Describe.self]
+        subcommands: [Index.self, Derive.self, Eval.self, Describe.self]
     )
 }
 

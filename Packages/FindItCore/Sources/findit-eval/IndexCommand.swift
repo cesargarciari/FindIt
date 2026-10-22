@@ -46,8 +46,14 @@ struct Index: AsyncParsableCommand {
 
         var files = try FolderScanner().imageFiles(in: URL(fileURLWithPath: corpus))
         if let limit { files = Array(files.prefix(limit)) }
+        // Found before enqueue, which silently drops copies because their hash is already stored.
+        let duplicates = findDuplicates(in: files)
         let enqueued = try await queue.enqueue(files)
-        print("Found \(files.count) images: \(enqueued.added) new, \(files.count - enqueued.added - enqueued.skipped.count) already in the database.")
+        let alreadyStored = files.count - enqueued.added - enqueued.skipped.count - duplicates.count
+        print("Found \(files.count) images: \(enqueued.added) new, \(alreadyStored) already in the database, \(duplicates.count) duplicates.")
+        for duplicate in duplicates {
+            print("Duplicate: \(duplicate.file) has the same bytes as \(duplicate.original), so only the original is indexed.")
+        }
         for path in enqueued.skipped {
             print("Skipped unreadable file: \(path)")
         }

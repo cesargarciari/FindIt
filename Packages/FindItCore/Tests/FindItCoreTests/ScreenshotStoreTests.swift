@@ -348,6 +348,27 @@ struct ScreenshotStoreTests {
         #expect(try await store.failureReasons() == ["timedOut": 2, "emptyEmbedding": 1])
     }
 
+    @Test func fileHashesReturnsStoredHashesAndLeavesOutUnknownIds() async throws {
+        let a = try #require(try await store.insertPending(path: "/a.png", fileHash: "hash-a"))
+        let b = try #require(try await store.insertPending(path: "/b.png", fileHash: "hash-b"))
+
+        #expect(try await store.fileHashes(for: [b, 999, a]) == [a: "hash-a", b: "hash-b"])
+        #expect(try await store.fileHashes(for: []).isEmpty)
+    }
+
+    @Test func statusesByHashLeavesOutUnknownHashes() async throws {
+        let indexed = try #require(try await store.insertPending(path: "/a.png", fileHash: "hash-a"))
+        let failed = try #require(try await store.insertPending(path: "/b.png", fileHash: "hash-b"))
+        _ = try await store.insertPending(path: "/c.png", fileHash: "hash-c")
+        try await store.saveIndexed(id: indexed, labels: [], searchableText: "a", vector: [1], model: "m")
+        try await store.markFailed(id: failed, reason: "boom")
+
+        let statuses = try await store.statuses(forHashes: ["hash-a", "hash-b", "hash-c", "unknown"])
+
+        #expect(statuses == ["hash-a": .indexed, "hash-b": .failed, "hash-c": .pending])
+        #expect(try await store.statuses(forHashes: []).isEmpty)
+    }
+
     @Test func progressCountsGroupsUnfinishedAsPending() async throws {
         let statuses = ["pending", "ocr_done", "described", "indexed", "indexed", "failed"]
         try await queue.write { db in

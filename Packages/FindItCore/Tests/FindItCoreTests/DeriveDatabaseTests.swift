@@ -3,10 +3,17 @@ import GRDB
 import Testing
 @testable import FindItCore
 
+private enum SourceFile {
+    static func execute(at url: URL, sql: String, arguments: StatementArguments) async throws {
+        try await DatabaseQueue(path: url.path).write { db in try db.execute(sql: sql, arguments: arguments) }
+    }
+}
+
 struct DeriveDatabaseTests {
     private struct Ids {
         let indexed: Int64
         let described: Int64
+        let failedAfterDescribe: Int64
         let failedAfterOCR: Int64
         let failedBeforeOCR: Int64
         let pending: Int64
@@ -26,6 +33,11 @@ struct DeriveDatabaseTests {
         try await store.saveOCR(id: described, text: "Hola")
         try await store.saveDescription(id: described, result: result, model: "qwen3-vl:8b")
 
+        let failedAfterDescribe = try #require(try await store.insertPending(path: "/f.png", fileHash: "f"))
+        try await store.saveOCR(id: failedAfterDescribe, text: "Hola")
+        try await store.saveDescription(id: failedAfterDescribe, result: result, model: "qwen3-vl:8b")
+        try await store.markFailed(id: failedAfterDescribe, reason: "emptyEmbedding")
+
         let failedAfterOCR = try #require(try await store.insertPending(path: "/c.png", fileHash: "c"))
         try await store.saveOCR(id: failedAfterOCR, text: "")
         try await store.markFailed(id: failedAfterOCR, reason: "decodingFailed")
@@ -34,7 +46,16 @@ struct DeriveDatabaseTests {
         try await store.markFailed(id: failedBeforeOCR, reason: "cannotRead")
 
         let pending = try #require(try await store.insertPending(path: "/e.png", fileHash: "e"))
-        return Ids(indexed: indexed, described: described, failedAfterOCR: failedAfterOCR, failedBeforeOCR: failedBeforeOCR, pending: pending)
+        // Earlier failures on rows derive retries, so the tests can check fail_count goes back to 0.
+        try await SourceFile.execute(at: url, sql: "UPDATE screenshots SET fail_count = 2 WHERE id IN (?, ?)", arguments: [indexed, described])
+        return Ids(
+            indexed: indexed,
+            described: described,
+            failedAfterDescribe: failedAfterDescribe,
+            failedAfterOCR: failedAfterOCR,
+            failedBeforeOCR: failedBeforeOCR,
+            pending: pending
+        )
     }
 
     private func read<T>(_ url: URL, _ body: (Database) throws -> T) throws -> T {
@@ -59,7 +80,7 @@ struct DeriveDatabaseTests {
 
             let result = try deriveDatabase(from: source, to: target, resetTo: .described)
 
-            #expect(result == DeriveResult(resetIndexed: 1, resetFailed: 0))
+            #expect(result == DeriveResult(resetIndexed: 1, resetDescribed: 0, resetFailed: 1))
             let shots = try rows(in: target)
             let wasIndexed = try #require(shots[ids.indexed])
             #expect(wasIndexed.status == .described)
@@ -67,8 +88,17 @@ struct DeriveDatabaseTests {
             #expect(wasIndexed.describerModel == "qwen3-vl:8b")
             #expect(wasIndexed.ocrText == "Total 42")
             #expect(wasIndexed.indexedAt == nil)
+            #expect(wasIndexed.failCount == 0)
             #expect(shots[ids.described]?.status == .described)
-            // Only ocr_done gives failed screenshots another try.
+            // It failed at embedding, maybe because of the old embedder, so the new one gets a try.
+            let failedAfterDescribe = try #require(shots[ids.failedAfterDescribe])
+            #expect(failedAfterDescribe.status == .described)
+            #expect(failedAfterDescribe.description == "A receipt")
+            #expect(failedAfterDescribe.failReason == nil)
+            #expect(failedAfterDescribe.failCount == 0)
+            #expect(failedAfterDescribe.labels == nil)
+            #expect(failedAfterDescribe.indexedAt == nil)
+            // No description, so it never reached embedding and stays failed.
             #expect(shots[ids.failedAfterOCR]?.status == .failed)
             #expect(shots[ids.pending]?.status == .pending)
             #expect(try count("embeddings", in: target) == 0)
@@ -84,9 +114,9 @@ struct DeriveDatabaseTests {
 
             let result = try deriveDatabase(from: source, to: target, resetTo: .ocrDone)
 
-            #expect(result == DeriveResult(resetIndexed: 1, resetFailed: 1))
+            #expect(result == DeriveResult(resetIndexed: 1, resetDescribed: 1, resetFailed: 2))
             let shots = try rows(in: target)
-            for id in [ids.indexed, ids.failedAfterOCR] {
+            for id in [ids.indexed, ids.described, ids.failedAfterDescribe, ids.failedAfterOCR] {
                 let shot = try #require(shots[id])
                 #expect(shot.status == .ocrDone)
                 #expect(shot.description == nil)
@@ -97,6 +127,7 @@ struct DeriveDatabaseTests {
                 #expect(shot.describerModel == nil)
                 #expect(shot.failReason == nil)
                 #expect(shot.indexedAt == nil)
+                #expect(shot.failCount == 0)
             }
             #expect(shots[ids.indexed]?.ocrText == "Total 42")
             // Empty OCR text still means OCR ran.

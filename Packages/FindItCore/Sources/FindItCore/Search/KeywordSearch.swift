@@ -2,7 +2,8 @@ import GRDB
 
 /// Screenshot ids whose text matches any word of `query`, best bm25 first.
 func keywordSearch(_ query: String, db: DatabaseQueue, limit: Int) async throws -> [Int64] {
-    // GRDB quotes each token, so input like `don't AND (` can't break the FTS5 syntax.
+    // Safe for any input: GRDB's ascii tokenizer drops punctuation and lowercases AND, OR and NOT,
+    // so FTS5 doesn't read them as operators, and an invalid pattern gives nil instead of an error.
     guard let pattern = FTS5Pattern(matchingAnyTokenIn: query) else {
         return []
     }
