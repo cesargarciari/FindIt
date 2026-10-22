@@ -51,6 +51,13 @@ public enum AppDatabase {
             }
         }
 
+        // Counts failures, so resetFailed can stop retrying a screenshot that never works.
+        migrator.registerMigration("v2") { db in
+            try db.alter(table: "screenshots") { t in
+                t.add(column: "fail_count", .integer).notNull().defaults(to: 0)
+            }
+        }
+
         return migrator
     }
 }

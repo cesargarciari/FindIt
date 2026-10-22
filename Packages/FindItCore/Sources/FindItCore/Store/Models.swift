@@ -24,6 +24,7 @@ public struct Screenshot: Codable, Sendable, Equatable, FetchableRecord, Mutable
     public var createdAt: Date
     public var status: Status
     public var failReason: String?
+    public var failCount: Int
     public var ocrText: String?
     public var description: String?
     public var category: String?
@@ -42,6 +43,7 @@ public struct Screenshot: Codable, Sendable, Equatable, FetchableRecord, Mutable
         case createdAt = "created_at"
         case status
         case failReason = "fail_reason"
+        case failCount = "fail_count"
         case ocrText = "ocr_text"
         case description
         case category
@@ -59,6 +61,7 @@ public struct Screenshot: Codable, Sendable, Equatable, FetchableRecord, Mutable
         createdAt: Date,
         status: Status = .pending,
         failReason: String? = nil,
+        failCount: Int = 0,
         ocrText: String? = nil,
         description: String? = nil,
         category: String? = nil,
@@ -74,6 +77,7 @@ public struct Screenshot: Codable, Sendable, Equatable, FetchableRecord, Mutable
         self.createdAt = createdAt
         self.status = status
         self.failReason = failReason
+        self.failCount = failCount
         self.ocrText = ocrText
         self.description = description
         self.category = category
@@ -95,6 +99,7 @@ public struct Screenshot: Codable, Sendable, Equatable, FetchableRecord, Mutable
             createdAt: try container.decode(Date.self, forKey: .createdAt),
             status: try container.decode(Status.self, forKey: .status),
             failReason: try container.decodeIfPresent(String.self, forKey: .failReason),
+            failCount: try container.decode(Int.self, forKey: .failCount),
             ocrText: try container.decodeIfPresent(String.self, forKey: .ocrText),
             description: try container.decodeIfPresent(String.self, forKey: .description),
             category: try container.decodeIfPresent(String.self, forKey: .category),
@@ -120,13 +125,24 @@ extension Screenshot {
     static let maxFailReasonLength = 1000
 
     /// Marks the screenshot failed and saves it. The reason is capped so a huge error body can't bloat the database.
-    /// Only status and fail_reason are written, so columns another step saved meanwhile are kept.
+    /// Only status, fail_reason and fail_count are written, so columns another step saved meanwhile are kept.
     /// If the save throws, this value is left unchanged.
     public mutating func markFailed(reason: String, in db: Database) throws {
-        var failed = self
-        failed.status = .failed
-        failed.failReason = String(reason.prefix(Self.maxFailReasonLength))
-        try failed.update(db, columns: [CodingKeys.status.rawValue, CodingKeys.failReason.rawValue])
-        self = failed
+        let cappedReason = String(reason.prefix(Self.maxFailReasonLength))
+        let row = Self.filter(key: id)
+        // Counted in SQL, because this copy's failCount may be stale if another copy already failed it.
+        let changed = try row.updateAll(db, [
+            Column(CodingKeys.status.rawValue).set(to: Status.failed),
+            Column(CodingKeys.failReason.rawValue).set(to: cappedReason),
+            Column(CodingKeys.failCount.rawValue) += 1,
+        ])
+        guard changed > 0,
+              let newCount = try row.select(Column(CodingKeys.failCount.rawValue), as: Int.self).fetchOne(db)
+        else {
+            throw RecordError.recordNotFound(databaseTableName: Self.databaseTableName, key: ["id": id.databaseValue])
+        }
+        status = .failed
+        failReason = cappedReason
+        failCount = newCount
     }
 }

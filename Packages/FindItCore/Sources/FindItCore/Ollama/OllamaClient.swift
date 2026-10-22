@@ -20,6 +20,9 @@ public struct OllamaClient: Sendable {
     // The first describe call loads the vision model into memory, which can take minutes.
     static let describeTimeout: TimeInterval = 180
     static let defaultTimeout: TimeInterval = 60
+    // Named once, because the ImageDescribing conformance forwards these same defaults.
+    public static let defaultTemperature: Double? = nil
+    public static let defaultThink: Bool? = false
     // A proxy or HTML error page can be any size, and the body may end up in fail_reason.
     static let maxErrorBodyLength = 512
 
@@ -52,8 +55,8 @@ public struct OllamaClient: Sendable {
         prompt: String,
         schemaJSON: String,
         model: String,
-        temperature: Double? = nil,
-        think: Bool? = false
+        temperature: Double? = OllamaClient.defaultTemperature,
+        think: Bool? = OllamaClient.defaultThink
     ) async throws -> String {
         // The schema is arbitrary JSON, so the body is built with JSONSerialization instead of Codable.
         guard let schema = try? JSONSerialization.jsonObject(with: Data(schemaJSON.utf8)) else {
