@@ -1,7 +1,8 @@
 eval/corpus/
 eval/golden.jsonl
 eval/golden.csv
-eval/*.sqlitexe
+eval/*.sqlite
+**/eval/results/
 .DS_Store
 build/x
 DerivedData/
