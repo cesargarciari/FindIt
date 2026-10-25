@@ -1,10 +1,10 @@
 import Foundation
 import GRDB
 
-public enum SearchMode: Sendable {
+public enum SearchMode: String, Codable, Sendable {
     case fused
-    case keywordOnly
-    case vectorOnly
+    case keywordOnly = "keyword"
+    case vectorOnly = "vector"
 }
 
 /// Which search found a result, so the UI can show why it matched.
@@ -48,15 +48,24 @@ public actor SearchEngine {
         vectorIndex = VectorIndex(vectors: try await store.allEmbeddings(model: model))
     }
 
-    public func search(_ query: String, mode: SearchMode = .fused, limit: Int = 20) async throws -> [SearchResult] {
+    /// `keywordWeight` scales the keyword list in fusion; the vector list always weighs 1.
+    public func search(
+        _ query: String,
+        mode: SearchMode = .fused,
+        limit: Int = 20,
+        keywordWeight: Double = 1.0,
+        removeStopwords: Bool = false
+    ) async throws -> [SearchResult] {
         if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return []
         }
 
-        let keywordIds = mode == .vectorOnly ? [] : try await keywordSearch(query, db: db, limit: Self.candidateLimit)
+        let keywordIds = mode == .vectorOnly ? [] : try await keywordSearch(
+            query, db: db, limit: Self.candidateLimit, removeStopwords: removeStopwords
+        )
         let vectorIds = mode == .keywordOnly ? [] : try await vectorSearch(query)
 
-        let fused = reciprocalRankFusion([keywordIds, vectorIds]).prefix(max(limit, 0))
+        let fused = reciprocalRankFusion([keywordIds, vectorIds], weights: [keywordWeight, 1.0]).prefix(max(limit, 0))
         let paths = try await store.paths(for: Array(fused))
         let byKeyword = Set(keywordIds)
         let byMeaning = Set(vectorIds)

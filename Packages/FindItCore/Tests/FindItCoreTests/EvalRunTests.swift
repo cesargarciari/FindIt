@@ -189,4 +189,104 @@ struct EvalRunTests {
             }
         }
     }
+
+    /// Builds the corpus once, so `body` can run several evals against it.
+    private func withCorpus<T: Sendable>(_ body: (URL) async throws -> T) async throws -> T {
+        try await withTemporaryDirectory { folder in
+            try await makeCorpus(in: folder)
+            return try await body(folder)
+        }
+    }
+
+    /// Runs `queries` (the shared golden set by default) with the fake embedding every query as [1, 0].
+    private func run(
+        _ queries: [GoldenQuery]? = nil,
+        in corpus: URL,
+        mode: SearchMode = .fused,
+        keywordWeight: Double = 1.0,
+        removeStopwords: Bool = false,
+        split: EvalSplit = .all
+    ) async throws -> EvalReport {
+        try await runEval(
+            golden: queries ?? golden, corpus: corpus, db: db, embedder: FakeTextEmbedder(vector: [1, 0]), model: "bge-m3",
+            mode: mode, keywordWeight: keywordWeight, removeStopwords: removeStopwords, split: split
+        )
+    }
+
+    @Test func devSplitScoresOnlyOddIds() async throws {
+        let report = try await withCorpus { try await run(in: $0, mode: .keywordOnly, split: .dev) }
+
+        #expect(report.perQuery.map(\.id) == ["q1", "q3", "q5"])
+        #expect(report.unscored.isEmpty)
+        // The check covers only dev's files, so d.png (q4) and gone.png (q4, q6) aren't reported.
+        #expect(report.check == CorpusCheck(missingFromCorpus: [], failed: [], unfinished: ["e.png"]))
+    }
+
+    @Test func testSplitScoresOnlyEvenIds() async throws {
+        let report = try await withCorpus { try await run(in: $0, mode: .keywordOnly, split: .test) }
+
+        #expect(report.perQuery.map(\.id) == ["q2", "q4"])
+        #expect(report.unscored == ["q6"])
+    }
+
+    @Test func splitByLastDigitSoQ10IsTest() async throws {
+        let queries = [GoldenQuery(id: "q10", query: "umbrella", relevant: ["a.png"], type: "visual", lang: "en")]
+
+        let (test, dev) = try await withCorpus { corpus in
+            (try await run(queries, in: corpus, mode: .keywordOnly, split: .test),
+             try await run(queries, in: corpus, mode: .keywordOnly, split: .dev))
+        }
+
+        #expect(test.perQuery.map(\.id) == ["q10"])
+        #expect(dev.perQuery.isEmpty)
+    }
+
+    @Test func idWithoutDigitThrowsOnlyWhenSplitting() async throws {
+        let queries = [GoldenQuery(id: "umbrella-a", query: "umbrella", relevant: ["a.png"], type: "visual", lang: "en")]
+
+        try await withCorpus { corpus in
+            let all = try await run(queries, in: corpus, mode: .keywordOnly)
+            #expect(all.perQuery.count == 1)
+            await #expect(throws: EvalError.unnumberedQuery("umbrella-a")) {
+                _ = try await run(queries, in: corpus, mode: .keywordOnly, split: .dev)
+            }
+        }
+    }
+
+    @Test func keywordWeightReachesSearch() async throws {
+        // Keyword search finds only b; vectors rank a, c, b. Weight 0 leaves the vector order.
+        let queries = [GoldenQuery(id: "w1", query: "factura", relevant: ["b.png"], type: "exact_text", lang: "es")]
+
+        let (equal, zero) = try await withCorpus { corpus in
+            (try await run(queries, in: corpus), try await run(queries, in: corpus, keywordWeight: 0))
+        }
+
+        #expect(equal.perQuery.first?.firstHitRank == 1)
+        #expect(zero.perQuery.first?.firstHitRank == 3)
+    }
+
+    @Test func stopwordsReachSearch() async throws {
+        // "on a" matches a and c only through stopwords, so removing them leaves nothing to find.
+        let queries = [GoldenQuery(id: "s1", query: "on a", relevant: ["c.png"], type: "exact_text", lang: "en")]
+
+        let (kept, removed) = try await withCorpus { corpus in
+            (try await run(queries, in: corpus, mode: .keywordOnly),
+             try await run(queries, in: corpus, mode: .keywordOnly, removeStopwords: true))
+        }
+
+        #expect(kept.perQuery.first?.hit == true)
+        #expect(removed.perQuery.first?.hit == false)
+    }
+
+    @Test func summarySavesTheConfig() async throws {
+        let report = try await withCorpus { try await run(in: $0, mode: .fused, keywordWeight: 1.5, removeStopwords: true, split: .dev) }
+
+        #expect(report.summary.config == EvalConfig(
+            embedder: "bge-m3", mode: .fused, keywordWeight: 1.5, stopwords: true, split: .dev
+        ))
+        let json = String(decoding: try JSONEncoder().encode(report.summary), as: UTF8.self)
+        #expect(json.contains(#""keyword_weight":1.5"#))
+        #expect(json.contains(#""mode":"fused""#))
+        #expect(json.contains(#""split":"dev""#))
+    }
 }

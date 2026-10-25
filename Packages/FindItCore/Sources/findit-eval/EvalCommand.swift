@@ -16,6 +16,8 @@ enum EvalMode: String, CaseIterable, ExpressibleByArgument {
     }
 }
 
+extension EvalSplit: ExpressibleByArgument {}
+
 struct Eval: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         abstract: "Score search against the golden set and save the results.",
@@ -37,10 +39,23 @@ struct Eval: AsyncParsableCommand {
     @Option(help: "fused, keyword or vector.")
     var mode: EvalMode = .fused
 
+    @Option(help: "How much the keyword list counts in fused mode; the vector list counts 1.")
+    var keywordWeight = 1.0
+
+    @Flag(help: "Drop common English and Spanish words from keyword queries.")
+    var stopwords = false
+
+    @Option(help: "all, dev (odd query ids) or test (even query ids).")
+    var split: EvalSplit = .all
+
     @Option(help: "Run name; results go to eval/results/<name>.")
     var name: String
 
     func validate() throws {
+        // A negative weight would push keyword matches down instead of up.
+        guard keywordWeight.isFinite, keywordWeight >= 0 else {
+            throw ValidationError("--keyword-weight must be a number of 0 or more.")
+        }
         // The name becomes one folder, so it can't climb out of eval/results.
         guard !name.isEmpty, !name.contains("/"), name != ".", name != ".." else {
             throw ValidationError("--name must be a plain folder name.")
@@ -88,13 +103,19 @@ struct Eval: AsyncParsableCommand {
                 db: try AppDatabase.open(atPath: db),
                 embedder: client,
                 model: embedder,
-                mode: mode.searchMode
+                mode: mode.searchMode,
+                keywordWeight: keywordWeight,
+                removeStopwords: stopwords,
+                split: split
             )
         } catch EvalError.noVectors(let model) {
             throw exitWithMessage("\(db) has no vectors for \(model). Pass the --embedder it was indexed with, or use --mode keyword.")
+        } catch EvalError.unnumberedQuery(let id) {
+            throw exitWithMessage("Query \(id) doesn't end in a digit, so --split \(split.rawValue) can't place it. Use --split all.")
         }
 
         printCheck(report)
+        printConfig(report.summary.config)
         printTable(report.summary)
         try writeEvalResults(report, to: results)
         print("\nSaved \(results.path)")
@@ -112,6 +133,12 @@ struct Eval: AsyncParsableCommand {
         if !report.unscored.isEmpty {
             print("Not scored, no relevant file in the corpus (\(report.unscored.count)): \(report.unscored.joined(separator: ", "))")
         }
+    }
+
+    private func printConfig(_ config: EvalConfig) {
+        print("")
+        print("embedder: \(config.embedder)  mode: \(config.mode.rawValue)  keyword weight: \(config.keywordWeight)  "
+            + "stopwords: \(config.stopwords ? "removed" : "kept")  split: \(config.split.rawValue)")
     }
 
     private func printTable(_ summary: EvalSummary) {

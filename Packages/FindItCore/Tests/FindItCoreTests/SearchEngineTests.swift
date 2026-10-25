@@ -127,4 +127,24 @@ struct SearchEngineTests {
             try await engine.search("coffee")
         }
     }
+
+    @Test func heavierKeywordWeightPutsKeywordHitsFirst() async throws {
+        let receipt = try await index("receipt", text: "coffee receipt", vector: [0, 1])
+        let ticket = try await index("ticket", text: "flight ticket", vector: [0.6, 0.8])
+        let engine = makeEngine()
+        try await engine.reload()
+
+        // Unweighted, receipt (keyword 1st, vector 2nd) beats ticket (vector 1st only).
+        #expect(try await engine.search("coffee").map(\.id) == [receipt, ticket])
+        // With no weight on keywords, only the vector order counts.
+        #expect(try await engine.search("coffee", keywordWeight: 0).map(\.id) == [ticket, receipt])
+    }
+
+    @Test func removeStopwordsReachesKeywordSearch() async throws {
+        _ = try await index("flight", text: "the flight", vector: [1, 0])
+        let engine = makeEngine()
+
+        #expect(try await engine.search("the", mode: .keywordOnly).count == 1)
+        #expect(try await engine.search("the", mode: .keywordOnly, removeStopwords: true).isEmpty)
+    }
 }

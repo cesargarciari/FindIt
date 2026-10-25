@@ -64,4 +64,33 @@ struct KeywordSearchTests {
         #expect(try await keywordSearch("", db: queue, limit: 50).isEmpty)
         #expect(try await keywordSearch("  ( ", db: queue, limit: 50).isEmpty)
     }
+
+    @Test func stopwordsAreKeptByDefault() async throws {
+        let receipt = try await index("receipt for coffee")
+        let other = try await index("the flight")
+
+        let ids = try await keywordSearch("the receipt", db: queue, limit: 50)
+
+        #expect(Set(ids) == [receipt, other])
+    }
+
+    @Test func removingStopwordsSearchesOnlyTheRest() async throws {
+        let receipt = try await index("receipt for coffee")
+        _ = try await index("the flight")
+        _ = try await index("factura de la luz")
+
+        let ids = try await keywordSearch("The receipt de la", db: queue, limit: 50, removeStopwords: true)
+
+        #expect(ids == [receipt])
+    }
+
+    @Test func onlyStopwordsReturnsNothing() async throws {
+        _ = try await index("the flight")
+
+        #expect(try await keywordSearch("the de la", db: queue, limit: 50, removeStopwords: true).isEmpty)
+    }
+
+    @Test func stopwordsMatchWhateverTheCaseAndAccents() {
+        #expect(withoutStopwords("Qué ESTÁ en el café") == "café")
+    }
 }

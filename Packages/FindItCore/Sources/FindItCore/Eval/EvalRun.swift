@@ -48,8 +48,40 @@ public struct MetricSummary: Codable, Equatable, Sendable {
     }
 }
 
-/// summary.json: numbers only.
+public enum EvalSplit: String, Codable, CaseIterable, Sendable {
+    case all
+    case dev
+    case test
+
+    func includes(_ query: GoldenQuery) throws -> Bool {
+        if self == .all { return true }
+        guard let last = query.id.last, last.isASCII, let digit = last.wholeNumberValue else {
+            throw EvalError.unnumberedQuery(query.id)
+        }
+        return (digit % 2 == 1) == (self == .dev)
+    }
+}
+
+/// The settings a run used, saved with its numbers so runs can be compared later.
+public struct EvalConfig: Codable, Equatable, Sendable {
+    public let embedder: String
+    public let mode: SearchMode
+    public let keywordWeight: Double
+    public let stopwords: Bool
+    public let split: EvalSplit
+
+    enum CodingKeys: String, CodingKey {
+        case embedder
+        case mode
+        case keywordWeight = "keyword_weight"
+        case stopwords
+        case split
+    }
+}
+
+/// summary.json: the run's settings and numbers, no query text.
 public struct EvalSummary: Codable, Equatable, Sendable {
+    public let config: EvalConfig
     public let overall: MetricSummary
     public let byType: [String: MetricSummary]
     public let byLang: [String: MetricSummary]
@@ -64,6 +96,7 @@ public struct EvalSummary: Codable, Equatable, Sendable {
     public let notIndexedUnfinished: Int
 
     enum CodingKeys: String, CodingKey {
+        case config
         case overall
         case byType = "by_type"
         case byLang = "by_lang"
@@ -89,6 +122,8 @@ public enum EvalError: Error, Equatable, Sendable {
     case resultsExist(String)
     /// No indexed vectors for this model, so vector search would quietly find nothing.
     case noVectors(model: String)
+    /// A query id with no last digit, so a dev or test split can't place it.
+    case unnumberedQuery(String)
 }
 
 /// One scored query, kept apart from QueryResult so per_query.jsonl stays small.
@@ -101,7 +136,7 @@ private struct Scored {
     let reciprocalRank: Double
 }
 
-/// Runs every golden query and scores it.
+/// Runs every golden query in `split` and scores it.
 ///
 /// Results are matched by content: a result counts as relevant when its stored file hash equals
 /// the hash of a golden file. So a byte-identical copy, which indexing stores only once, still counts.
@@ -111,8 +146,14 @@ public func runEval(
     db: DatabaseQueue,
     embedder: any TextEmbedding,
     model: String,
-    mode: SearchMode
+    mode: SearchMode,
+    keywordWeight: Double = 1.0,
+    removeStopwords: Bool = false,
+    split: EvalSplit = .all
 ) async throws -> EvalReport {
+    let config = EvalConfig(embedder: model, mode: mode, keywordWeight: keywordWeight, stopwords: removeStopwords, split: split)
+    // Filtered first, so the corpus check and unscored list also cover only this split.
+    let golden = try golden.filter(split.includes)
     let store = ScreenshotStore(db)
     let hashes = try hashGoldenFiles(golden, in: corpus)
     let check = try await checkGoldenFiles(golden, hashes: hashes, store: store)
@@ -141,7 +182,9 @@ public func runEval(
         }
 
         let start = clock.now
-        let results = try await engine.search(query.query, mode: mode, limit: 20)
+        let results = try await engine.search(
+            query.query, mode: mode, limit: 20, keywordWeight: keywordWeight, removeStopwords: removeStopwords
+        )
         times.append(milliseconds(start.duration(to: clock.now)))
 
         let resultHashes = try await store.fileHashes(for: results.map(\.id))
@@ -167,6 +210,7 @@ public func runEval(
     }
 
     let summary = EvalSummary(
+        config: config,
         overall: summarize(scored),
         byType: Dictionary(grouping: scored, by: \.type).mapValues(summarize),
         byLang: Dictionary(grouping: scored, by: \.lang).mapValues(summarize),
