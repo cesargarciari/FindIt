@@ -382,4 +382,19 @@ struct ScreenshotStoreTests {
 
         #expect(try await store.progressCounts() == ProgressCounts(pending: 3, indexed: 2, failed: 1))
     }
+
+    @Test func descriptionsReturnsStoredOnesAndLeavesOutTheRest() async throws {
+        let described = try #require(try await store.insertPending(path: "/a.png", fileHash: "a"))
+        let pending = try #require(try await store.insertPending(path: "/b.png", fileHash: "b"))
+        let result = DescribeResult(description: "A receipt", category: "document", language: "en", entities: [])
+        try await store.saveDescription(id: described, result: result, model: "qwen3-vl:8b")
+
+        let descriptions = try await store.descriptions(for: [described, pending, 999])
+
+        #expect(descriptions == [described: "A receipt"])
+    }
+
+    @Test func descriptionsForNoIdsIsEmpty() async throws {
+        #expect(try await store.descriptions(for: []).isEmpty)
+    }
 }

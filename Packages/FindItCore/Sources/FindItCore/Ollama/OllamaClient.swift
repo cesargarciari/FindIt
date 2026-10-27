@@ -10,6 +10,23 @@ public enum OllamaError: Error, Sendable {
     case decodingFailed(String)
     /// The schema passed to `describe` is not valid JSON.
     case invalidSchema
+    /// Ollama stopped a model download, with its message, or the download ended before it finished.
+    case pullFailed(String)
+}
+
+/// One progress update from `pull`.
+public struct PullProgress: Equatable, Sendable {
+    /// Ollama's own words, such as "pulling manifest" or "verifying sha256 digest".
+    public let status: String
+    /// Bytes of the part being downloaded; nil while Ollama does something else.
+    public let completed: Int64?
+    public let total: Int64?
+
+    /// From 0 to 1 while a part downloads, otherwise nil.
+    public var fraction: Double? {
+        guard let completed, let total, total > 0 else { return nil }
+        return min(Double(completed) / Double(total), 1)
+    }
 }
 
 /// Talks to a local Ollama server over its HTTP API.
@@ -20,6 +37,8 @@ public struct OllamaClient: Sendable {
     // The first describe call loads the vision model into memory, which can take minutes.
     static let describeTimeout: TimeInterval = 180
     static let defaultTimeout: TimeInterval = 60
+    // How long a download may go quiet; verifying a large model sends nothing for a while.
+    static let pullTimeout: TimeInterval = 300
     // Named once, because the ImageDescribing conformance forwards these same defaults.
     public static let defaultTemperature: Double? = nil
     public static let defaultThink: Bool? = false
@@ -99,6 +118,57 @@ public struct OllamaClient: Sendable {
         return try decode(TagsResponse.self, from: data).models.map(\.name)
     }
 
+    /// Downloads `model` into Ollama, yielding each progress update Ollama streams.
+    /// The stream finishes once Ollama reports success. Stopping iteration cancels the download request.
+    public func pull(_ model: String) -> AsyncThrowingStream<PullProgress, any Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    try await streamPull(model) { continuation.yield($0) }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    private func streamPull(_ model: String, onProgress: (PullProgress) -> Void) async throws {
+        var request = URLRequest(url: baseURL.appending(path: "api/pull"), timeoutInterval: Self.pullTimeout)
+        request.httpMethod = "POST"
+        request.httpBody = try JSONEncoder().encode(PullRequest(model: model, stream: true))
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        let bytes: URLSession.AsyncBytes
+        let response: URLResponse
+        do {
+            (bytes, response) = try await session.bytes(for: request)
+        } catch let error as URLError {
+            throw Self.transportError(error)
+        }
+
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard (200..<300).contains(status) else {
+            var body = Data()
+            for try await byte in bytes.prefix(Self.maxErrorBodyLength) { body.append(byte) }
+            throw OllamaError.badStatus(code: status, body: Self.errorMessage(from: body))
+        }
+
+        // Ollama streams one JSON object per line.
+        for try await line in bytes.lines {
+            let update = try decode(PullLine.self, from: Data(line.utf8))
+            if let error = update.error {
+                throw OllamaError.pullFailed(String(error.prefix(Self.maxErrorBodyLength)))
+            }
+            let progress = PullProgress(status: update.status ?? "", completed: update.completed, total: update.total)
+            onProgress(progress)
+            if progress.status == "success" { return }
+        }
+        try Task.checkCancellation()
+        throw OllamaError.pullFailed("The download ended before Ollama reported success.")
+    }
+
     private func send(path: String, method: String, body: Data?, timeout: TimeInterval) async throws -> Data {
         var request = URLRequest(url: baseURL.appending(path: path), timeoutInterval: timeout)
         request.httpMethod = method
@@ -112,11 +182,7 @@ public struct OllamaClient: Sendable {
         do {
             (data, response) = try await session.data(for: request)
         } catch let error as URLError {
-            // A cancelled task (app quit, indexing stopped) must not mark a screenshot as failed.
-            // .cancelled alone isn't enough: an invalidated session reports it too, and that is a real failure.
-            if error.code == .cancelled && Task.isCancelled { throw CancellationError() }
-            if error.code == .timedOut { throw OllamaError.timedOut }
-            throw OllamaError.unreachable(error)
+            throw Self.transportError(error)
         }
         // A cancel that lands after the response arrived would otherwise still be processed.
         try Task.checkCancellation()
@@ -126,6 +192,14 @@ public struct OllamaClient: Sendable {
             throw OllamaError.badStatus(code: status, body: Self.errorMessage(from: data))
         }
         return data
+    }
+
+    private static func transportError(_ error: URLError) -> any Error {
+        // A cancelled task (app quit, indexing stopped) must not mark a screenshot as failed.
+        // .cancelled alone isn't enough: an invalidated session reports it too, and that is a real failure.
+        if error.code == .cancelled && Task.isCancelled { return CancellationError() }
+        if error.code == .timedOut { return OllamaError.timedOut }
+        return OllamaError.unreachable(error)
     }
 
     private static func errorMessage(from data: Data) -> String {
@@ -150,6 +224,18 @@ private struct EmbedRequest: Encodable {
 
 private struct EmbedResponse: Decodable {
     let embeddings: [[Float]]
+}
+
+private struct PullRequest: Encodable {
+    let model: String
+    let stream: Bool
+}
+
+private struct PullLine: Decodable {
+    let status: String?
+    let completed: Int64?
+    let total: Int64?
+    let error: String?
 }
 
 private struct ChatResponse: Decodable {

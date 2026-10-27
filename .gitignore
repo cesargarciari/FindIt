@@ -8,9 +8,11 @@ build/x
 DerivedData/
 xcuserdata/
 *.dmg
+make_dmg.sh
 
 CLAUDE.MD
 
 .build/
 .swiftpm/
 
+build/

@@ -283,4 +283,86 @@ struct OllamaClientTests {
             if case OllamaError.decodingFailed = error { true } else { false }
         }
     }
+
+    private func collect(_ stream: AsyncThrowingStream<PullProgress, any Error>) async throws -> [PullProgress] {
+        var updates: [PullProgress] = []
+        for try await update in stream { updates.append(update) }
+        return updates
+    }
+
+    @Test func pullStreamsProgressUntilSuccess() async throws {
+        let (session, baseURL) = MockURLProtocol.stub(body: """
+            {"status":"pulling manifest"}
+            {"status":"pulling 6a0746a1ec1a","digest":"sha256:6a07","total":200,"completed":50}
+            {"status":"success"}
+
+            """)
+        let client = OllamaClient(baseURL: baseURL, session: session)
+
+        let updates = try await collect(client.pull("bge-m3"))
+
+        #expect(updates == [
+            PullProgress(status: "pulling manifest", completed: nil, total: nil),
+            PullProgress(status: "pulling 6a0746a1ec1a", completed: 50, total: 200),
+            PullProgress(status: "success", completed: nil, total: nil),
+        ])
+        #expect(updates[1].fraction == 0.25)
+        #expect(updates[0].fraction == nil)
+        let request = try #require(MockURLProtocol.captured(for: baseURL).first)
+        #expect(request.method == "POST")
+        #expect(request.path == "/api/pull")
+        #expect(try json(request.body)["model"] as? String == "bge-m3")
+    }
+
+    @Test func pullThrowsOllamasErrorLine() async throws {
+        let (session, baseURL) = MockURLProtocol.stub(body: """
+            {"status":"pulling manifest"}
+            {"error":"pull model manifest: file does not exist"}
+            """)
+        let client = OllamaClient(baseURL: baseURL, session: session)
+
+        await #expect {
+            _ = try await collect(client.pull("no-such-model"))
+        } throws: { error in
+            if case OllamaError.pullFailed("pull model manifest: file does not exist") = error { true } else { false }
+        }
+    }
+
+    @Test func pullThatEndsWithoutSuccessThrows() async throws {
+        let (session, baseURL) = MockURLProtocol.stub(body: #"{"status":"pulling manifest"}"#)
+        let client = OllamaClient(baseURL: baseURL, session: session)
+
+        await #expect {
+            _ = try await collect(client.pull("bge-m3"))
+        } throws: { error in
+            if case OllamaError.pullFailed = error { true } else { false }
+        }
+    }
+
+    @Test func pullBadStatusCarriesOllamasMessage() async throws {
+        let (session, baseURL) = MockURLProtocol.stub(status: 500, body: #"{"error":"disk full"}"#)
+        let client = OllamaClient(baseURL: baseURL, session: session)
+
+        await #expect {
+            _ = try await collect(client.pull("bge-m3"))
+        } throws: { error in
+            if case OllamaError.badStatus(500, "disk full") = error { true } else { false }
+        }
+    }
+
+    @Test func pullWhenOllamaIsDownIsUnreachable() async throws {
+        let (session, baseURL) = MockURLProtocol.stub(error: .cannotConnectToHost)
+        let client = OllamaClient(baseURL: baseURL, session: session)
+
+        await #expect {
+            _ = try await collect(client.pull("bge-m3"))
+        } throws: { error in
+            if case OllamaError.unreachable = error { true } else { false }
+        }
+    }
+
+    @Test func fractionIsCappedAtOne() {
+        #expect(PullProgress(status: "x", completed: 300, total: 200).fraction == 1)
+        #expect(PullProgress(status: "x", completed: 5, total: 0).fraction == nil)
+    }
 }

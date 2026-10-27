@@ -1,17 +1,17 @@
 import SwiftUI
-import Playgrounds
 
 struct ContentView: View {
+    let model: AppModel
+
     var body: some View {
-        Text("Hello, world!")
-            .padding()
+        Group {
+            if let library = model.library {
+                LibraryView(library: library)
+            } else {
+                SetupView(model: model)
+            }
+        }
+        .frame(minWidth: 640, minHeight: 440)
+        .task { await model.launch() }
     }
-}
-
-#Preview {
-    ContentView()
-}
-
-#Playground {
-    _ = 1 + 2
 }

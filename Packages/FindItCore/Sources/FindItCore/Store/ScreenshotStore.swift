@@ -198,6 +198,22 @@ public struct ScreenshotStore: Sendable {
         }
     }
 
+    /// The stored description for each id, so search results can show it. Ids without one are left out.
+    public func descriptions(for ids: [Int64]) async throws -> [Int64: String] {
+        if ids.isEmpty { return [:] }
+        return try await writer.read { db in
+            let rows = try Row.fetchAll(db, Screenshot
+                .select(Column("id"), Column("description"))
+                .filter(keys: ids)
+                .filter(Column("description") != nil))
+            var descriptions: [Int64: String] = [:]
+            for row in rows {
+                descriptions[row["id"]] = row["description"]
+            }
+            return descriptions
+        }
+    }
+
     /// How many failed screenshots share each fail_reason, for a run's summary.
     public func failureReasons() async throws -> [String: Int] {
         try await writer.read { db in
